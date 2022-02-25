@@ -1,0 +1,6 @@
+[submodule "mlx90640"]
+	path = mlx90640
+	url = https://github.com/MichaelBell/pico-mlx90640.git
+[submodule "PicoDVI"]
+	path = PicoDVI
+	url = https://github.com/Wren6991/PicoDVI.git
