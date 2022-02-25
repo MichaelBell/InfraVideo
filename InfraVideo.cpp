@@ -17,11 +17,17 @@ static uint8_t display[FRAME_WIDTH * FRAME_HEIGHT];
 
 static paramsMLX90640 mlx90640;
 static uint16_t eeMLX90640[832];
-static uint16_t frame[834];
-static float mlx90640Frame[768];
+static uint16_t mlxFrameRaw[834];
+
+#define IR_FRAME_WIDTH 24
+#define IR_FRAME_HEIGHT 32
+#define IR_FRAME_SIZE (IR_FRAME_WIDTH * IR_FRAME_HEIGHT)
+static float irFrame[IR_FRAME_SIZE];
+static float irFrameAvg[IR_FRAME_SIZE];
 
 void get_frame()
 {
+  const float trShift = 8.f;
   float eTa;
   float emissivity = 1;
   int retries = 10;
@@ -30,20 +36,28 @@ void get_frame()
 
   while (retries-- && (!subpages[0] || !subpages[1]))
   {
-    MLX90640_GetFrameData(MLX_I2C_ADDR, frame);
-    subpage = MLX90640_GetSubPageNumber(frame);
+    MLX90640_GetFrameData(MLX_I2C_ADDR, mlxFrameRaw);
+    subpage = MLX90640_GetSubPageNumber(mlxFrameRaw);
     printf("Got data for page %d\n", subpage);
 
     subpages[subpage] = 1;
 
-    eTa = MLX90640_GetTa(frame, &mlx90640);
-    MLX90640_CalculateTo(frame, &mlx90640, emissivity, eTa, mlx90640Frame);
+    eTa = MLX90640_GetTa(mlxFrameRaw, &mlx90640) - trShift;
+    MLX90640_CalculateTo(mlxFrameRaw, &mlx90640, emissivity, eTa, irFrame);
 
-    MLX90640_BadPixelsCorrection((&mlx90640)->brokenPixels, mlx90640Frame, 1, &mlx90640);
-    MLX90640_BadPixelsCorrection((&mlx90640)->outlierPixels, mlx90640Frame, 1, &mlx90640);
+    MLX90640_BadPixelsCorrection((&mlx90640)->brokenPixels, irFrame, 1, &mlx90640);
+    MLX90640_BadPixelsCorrection((&mlx90640)->outlierPixels, irFrame, 1, &mlx90640);
   }
 
   printf("Got frame\n");
+}
+
+void average_frame()
+{
+  for (int i = 0; i < IR_FRAME_SIZE; ++i)
+  {
+    irFrameAvg[i] = (irFrameAvg[i] + irFrame[i]) * 0.5f;
+  }
 }
 
 uint8_t colour_from_value(float v)
@@ -82,13 +96,17 @@ uint8_t colour_from_value(float v)
 int main()
 {
     memset(display, 0x00, FRAME_WIDTH * FRAME_HEIGHT);
+
+    for (int i = 0; i < IR_FRAME_SIZE; ++i)
+      irFrameAvg[i] = 20.f;
+
     display_start(display);
 
     stdio_init_all();
 
     printf("Starting\n");
     MLX90640_I2CInit();
-    MLX90640_I2CFreqSet(400);
+    MLX90640_I2CFreqSet(1000);
 
     if (MLX90640_SetDeviceMode(MLX_I2C_ADDR, 0) != 0)
     {
@@ -102,7 +120,7 @@ int main()
       printf("Failed setting subpage repeat\n");
       return 1;
     }
-    if (MLX90640_SetRefreshRate(MLX_I2C_ADDR, 0b100) != 0)
+    if (MLX90640_SetRefreshRate(MLX_I2C_ADDR, 0b101) != 0)
     {
       printf("Failed setting refresh rate\n");
       return 1;
@@ -126,28 +144,42 @@ int main()
 
     printf("Completed setup\n");
 
+    // Sometimes get bad data on first frame, so fetch a frame before the loop
+    get_frame();
+
     while (1)
     {
       get_frame();
+      average_frame();
 #if 0
       for (int i = 0; i < 24; i += 2)
       {
         for (int j = 0; j < 32; j += 4)
         {
-          printf("%.1f ", mlx90640Frame[i*32 + j]);
+          printf("%.1f ", irFrame[i*32 + j]);
         }
         printf("\n");
       }
 #endif
-      for (int i = 0; i < 32; ++i)
+      for (int i = 0; i < IR_FRAME_HEIGHT - 1; ++i)
       {
-        for (int j = 0; j < 24; ++j)
+        for (int j = 0; j < IR_FRAME_WIDTH - 1; ++j)
         {
-          uint8_t col = colour_from_value(mlx90640Frame[(23-j)*32 + i]);
-          display[FRAME_WIDTH * (i + 1) * 4 + (j + 1) * 4] = col;
-          display[FRAME_WIDTH * (i + 1) * 4 + (j + 1) * 4 + 1] = col;
-          display[FRAME_WIDTH * ((i + 1) * 4 + 1) + (j + 1) * 4] = col;
-          display[FRAME_WIDTH * ((i + 1) * 4 + 1) + (j + 1) * 4 + 1] = col;
+          float tl = irFrameAvg[(23-j)*32 + i];
+          float tr = irFrameAvg[(22-j)*32 + i];
+          float bl = irFrameAvg[(23-j)*32 + i + 1];
+          float br = irFrameAvg[(22-j)*32 + i + 1];
+          for (int k = 0; k < 5; ++k)
+          {
+            float l = (tl * (5-k) + bl * k) * 0.2f;
+            float r = (tr * (5-k) + br * k) * 0.2f;
+            for (int m = 0; m < 5; ++m)
+            {
+              float val = (l * (5-m) + r * m) * 0.2f;
+              uint8_t col = colour_from_value(val);
+              display[FRAME_WIDTH * ((i + 1) * 5 + k) + (j + 1) * 5 + m] = col;
+            }
+          }
         }
       }
 
